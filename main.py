@@ -97,7 +97,7 @@ def determine_project_type(project_name, file_analysis):
         else:
             return {
                 'type': 'python', 
-                'description': f"{project_name}: Python project",
+                'description': f"{project_name}: Python project without dependencies",
                 'files': files_str,
                 'has_dependencies': False,
                 'dependency_file': None
@@ -116,7 +116,7 @@ def determine_project_type(project_name, file_analysis):
         else:
             return {
                 'type': 'javascript', 
-                'description': f"{project_name}: Javascript project",
+                'description': f"{project_name}: JavaScript project without dependencies",
                 'files': files_str,
                 'has_dependencies': False,
                 'dependency_file': None
@@ -137,7 +137,7 @@ def determine_project_type(project_name, file_analysis):
         files_str = ", ".join(file_analysis['java']['files'])
         return {
             'type': 'java',
-            'description': f"{project_name}: Java project",
+            'description': f"{project_name}: Java project without dependencies",
             'files': files_str,
             'has_dependencies': False,
             'dependency_file': None
@@ -156,7 +156,7 @@ def determine_project_type(project_name, file_analysis):
         else:
             return {
                 'type': 'c',
-                'description': f"{project_name}: C project",
+                'description': f"{project_name}: C project without dependencies",
                 'files': files_str,
                 'has_dependencies': False,
                 'build_system': None
@@ -175,7 +175,7 @@ def determine_project_type(project_name, file_analysis):
         else:
             return {
                 'type': 'cpp',
-                'description': f"{project_name}: C++ project",
+                'description': f"{project_name}: C++ project without dependencies",
                 'files': files_str,
                 'has_dependencies': False,
                 'build_system': None
@@ -194,7 +194,7 @@ def determine_project_type(project_name, file_analysis):
         else:
             return {
                 'type': 'go',
-                'description': f"{project_name}: Go project",
+                'description': f"{project_name}: Go project without dependencies",
                 'files': files_str,
                 'has_dependencies': False,
                 'build_system': None
@@ -204,7 +204,7 @@ def determine_project_type(project_name, file_analysis):
         files_str = ", ".join(file_analysis['rust']['files'])
         return {
             'type': 'rust',
-            'description': f"{project_name}: Rust project",
+            'description': f"{project_name}: Rust project without dependencies",
             'files': files_str,
             'has_dependencies': False,
             'dependency_file': None
@@ -503,10 +503,26 @@ def main():
                 # Default fallback
                 project_info['executable_name'] = files_list[0] if files_list else 'main'
         
-        # Print for immediate feedback
-        interactive_status = ".The project is interactive)" if project_info['is_interactive'] else ".The project is not interactive"
-        executable_info = f" .The file to be executed during the CMD is: {project_info['executable_name']}"
-        print(project_info['description'] + ', The name of the file(s) is(are) ' + project_info['files'] + interactive_status + executable_info)
+        # Create comprehensive description for LLM
+        dependency_info = ""
+        if project_info['has_dependencies']:
+            dependency_info = f" with {project_info['dependency_file']}"
+        else:
+            dependency_info = " without dependencies"
+            
+        interactive_status = "interactive" if project_info['is_interactive'] else "non-interactive"
+        
+        # Build the complete description that will be sent to LLM
+        project_info['description'] = f"""Create a Dockerfile for project '{project}':
+- Language: {project_info['type'].upper()}
+- Files to copy: {project_info['files']}
+- Main executable: {project_info['executable_name']}
+- Dependencies: {dependency_info}
+- Interactive: {interactive_status}
+- Dependency file exists: {'YES' if project_info['has_dependencies'] else 'NO'}"""
+        
+        # Print for immediate feedback (keep the old format for console output)
+        print(f"{project}: {project_info['type']} project{dependency_info}, files: {project_info['files']}, executable: {project_info['executable_name']}, {interactive_status}")
         
         # Store for LLM usage
         all_project_analyses.append(project_info)
@@ -514,4 +530,4 @@ def main():
     return all_project_analyses
 
 if __name__ == "__main__":
-    analyses = main() # pyright: ignore[reportShadowedImports]
+    analyses = main()
