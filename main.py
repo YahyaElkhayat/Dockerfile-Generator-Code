@@ -512,18 +512,30 @@ def main():
             
         interactive_status = "interactive" if project_info['is_interactive'] else "non-interactive"
         
+        # Build system information for the description
+        build_system_info = ""
+        if project_info.get('build_system') == 'Makefile':
+            build_system_info = "\n- Build system: Makefile (use 'make' to compile)"
+        elif project_info.get('dependency_file'):
+            if project_info['dependency_file'] == 'package.json':
+                build_system_info = "\n- Build system: npm/yarn (use 'npm install' for dependencies)"
+            elif project_info['dependency_file'] == 'requirements.txt':
+                build_system_info = "\n- Build system: pip (use 'pip install -r requirements.txt' for dependencies)"
+        
         # Build the complete description that will be sent to LLM
-        project_info['description'] = f"""Create a Dockerfile for project '{project}':
+        project_info['description'] = f"""The project '{project}':
 - Language: {project_info['type'].upper()}
-- Files to copy: {project_info['files']}
+- Files inside the project: {project_info['files']}
 - Main executable: {project_info['executable_name']}
 - Dependencies: {dependency_info}
 - Interactive: {interactive_status}
-- Dependency file exists: {'YES' if project_info['has_dependencies'] else 'NO'}"""
+- Dependency file exists: {'YES' if project_info['has_dependencies'] else 'NO'}{build_system_info}"""
         
         # Print for immediate feedback (keep the old format for console output)
-        print(f"{project}: {project_info['type']} project{dependency_info}, files: {project_info['files']}, executable: {project_info['executable_name']}, {interactive_status}")
-        
+        makefile_status = " with Makefile" if project_info.get('build_system') == 'Makefile' else ""
+        print(f"{project}: {project_info['type']} project{dependency_info}{makefile_status}, files: {project_info['files']}, executable: {project_info['executable_name']}, {interactive_status}")
+        print(f"{project}: {project_info['description']}")
+
         # Store for LLM usage
         all_project_analyses.append(project_info)
     
