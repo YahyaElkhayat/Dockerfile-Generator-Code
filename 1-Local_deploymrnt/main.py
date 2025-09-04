@@ -427,11 +427,11 @@ def main():
         if not os.path.isdir(project_path):
             continue
             
-        # Copy project to traitement
+        # move project to traitement
         dest_path = os.path.join(traitement_dir, project)
         if os.path.exists(dest_path):
             shutil.rmtree(dest_path)
-        shutil.copytree(project_path, dest_path)
+        shutil.move(project_path, dest_path)
         
         # Analyze project files
         file_analysis = analyze_project_files(dest_path)
