@@ -1,18 +1,15 @@
 # Automated Dockerfile Generator
 
 <p align="center">
-  <img src="path/to/your/header-image.png" alt="Dockerfile Generator Pipeline" width="800">
+  <img src="Dockerfile_Genrator_roadmap.png" alt="Python Version">
+
 </p>
 
 <p align="center">
-  Smart containerization for your programming projects. Built with AI.
+  Smart containerization for your programming projects. Built with Ollama.
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python Version">
-  <img src="https://img.shields.io/badge/ollama-powered-green.svg" alt="Ollama Powered">
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-</p>
+
 
 ## Table of Contents
 
