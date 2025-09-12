@@ -2,13 +2,13 @@ import os
 import glob
 import shutil
 import re
-import json  # ✅ Added missing import
+import json  
 from google.cloud import pubsub_v1
 from git import Repo 
 
 subscriber = pubsub_v1.SubscriberClient()
-project_id = "total-treat-466514-k4" 
-subscription_name = "repos-availability-sub"
+project_id = "xxxxxxxxxxxx" #Change it to your GCP project ID 
+subscription_name = "repos-availability-sub" # Change the name if you don't like(I don't think you will)
 subscription_path = subscriber.subscription_path(project_id, subscription_name)
 
 def process_message_and_clone_code(message):
@@ -36,12 +36,11 @@ def process_message_and_clone_code(message):
         print("No new repository to clone.")
     
     message.ack() 
+
 def start_listening():
     """Start listening for Pub/Sub messages"""
     print(f"Listening for messages on {subscription_path}...")
     
-    # This keeps the program running and calls process_message_and_clone_code
-    # for each message received
     subscriber.subscribe(subscription_path, callback=process_message_and_clone_code)
     
     print("VM subscriber is running. Press Ctrl+C to stop...")
@@ -50,7 +49,7 @@ def start_listening():
     try:
         while True:
             import time
-            time.sleep(60)  # Sleep for 1 minute, then check again
+            time.sleep(60)  
     except KeyboardInterrupt:
         print("Shutting down subscriber...")
 
@@ -482,7 +481,7 @@ def main():
         dest_path = os.path.join(traitement_dir, project)
         if os.path.exists(dest_path):
             shutil.rmtree(dest_path)
-        shutil.move(project_path, dest_path)
+        shutil.copytree(project_path, dest_path)
         
         # Analyze project files
         file_analysis = analyze_project_files(dest_path)
@@ -593,5 +592,5 @@ def main():
     return all_project_analyses
 
 if __name__ == "__main__":
+    start_listening()
     analyses = main()
-    start_listening=main()
