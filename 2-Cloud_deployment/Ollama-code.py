@@ -1,596 +1,423 @@
+import ollama
 import os
-import glob
-import shutil
-import re
-import json  
-from google.cloud import pubsub_v1
-from git import Repo 
+from main import main
+import requests
+import subprocess
+import base64
+import subprocess
+import base64
+import sys
 
-subscriber = pubsub_v1.SubscriberClient()
-project_id = "xxxxxxxxxxxx" #Change it to your GCP project ID 
-subscription_name = "repos-availability-sub" # Change the name if you don't like(I don't think you will)
-subscription_path = subscriber.subscription_path(project_id, subscription_name)
+def get_fresh_token():
+    result = subprocess.run(['gcloud', 'auth', 'print-access-token'], 
+                          capture_output=True, text=True)
+    return result.stdout.strip()
 
-def process_message_and_clone_code(message):
-    print(f"Received: {message.data.decode('utf-8')}")
-    
-    message_data = json.loads(message.data.decode('utf-8'))
-    status = message_data["status"]
-    
-    if status == "new_repo_found":
-        clone_url = message_data["clone_url"]
-        repo_name = message_data["repo_name"] 
-        
-        print(f"Cloning repository: {repo_name}")
-        
-        inputs_dir = "inputs"
-        if not os.path.exists(inputs_dir):
-            os.makedirs(inputs_dir)
-        
-        dest_path = os.path.join(inputs_dir, repo_name)
-        
-        Repo.clone_from(clone_url, dest_path)
-        print(f"Repository '{repo_name}' cloned successfully to {dest_path}")
-        
-    else:
-        print("No new repository to clone.")
-    
-    message.ack() 
-
-def start_listening():
-    """Start listening for Pub/Sub messages"""
-    print(f"Listening for messages on {subscription_path}...")
-    
-    subscriber.subscribe(subscription_path, callback=process_message_and_clone_code)
-    
-    print("VM subscriber is running. Press Ctrl+C to stop...")
-    
-    # Keep the main thread running
+def analyse_dockerfile_with_vertexai(output_file, dockerfile_content):
     try:
-        while True:
-            import time
-            time.sleep(60)  
-    except KeyboardInterrupt:
-        print("Shutting down subscriber...")
-
-def analyze_project_files(dest_path):
-    """Analyze all file types in the project"""
-    file_analysis = {}
-    
-    # Python files
-    py_files = [f for f in glob.glob(os.path.join(dest_path,"**", "*.py"), recursive=True) if "node_modules" not in f ]
-    py_requirements = glob.glob(os.path.join(dest_path, "**", "requirements.txt"), recursive=True)
-    file_analysis['python'] = {
-        'files': [os.path.basename(f) for f in py_files] if py_files else [],
-        'has_requirements': bool(py_requirements),
-        'count': len(py_files)
-    }
-    
-    # Java files
-    java_files = glob.glob(os.path.join(dest_path, "**","*.java"), recursive=True)
-    file_analysis['java'] = {
-        'files': [os.path.basename(f) for f in java_files] if java_files else [],
-        'count': len(java_files)
-    }
-    
-    # JavaScript files
-    js_files = [f for f in glob.glob(os.path.join(dest_path, "**","*.js"), recursive=True) if "node_modules" not in f]
-    js_config = glob.glob(os.path.join(dest_path, "**", "package.json"), recursive=True)
-    file_analysis['javascript'] = {
-        'files': [os.path.basename(f) for f in js_files] if js_files else [],
-        'has_package_json': bool(js_config),
-        'count': len(js_files)
-    }
-    
-    # TypeScript files
-    ts_files = [f for f in glob.glob(os.path.join(dest_path, "**", "*.ts"), recursive=True) if "node_modules" not in f]
-    ts_config = glob.glob(os.path.join(dest_path, "**", "tsconfig.json"), recursive=True)
-    file_analysis['typescript'] = {
-        'files': [os.path.basename(f) for f in ts_files] if ts_files else [],
-        'has_tsconfig': bool(ts_config),
-        'count': len(ts_files)
-    }
-    
-    # C files
-    c_files = [f for f in glob.glob(os.path.join(dest_path,"**", "*.c"), recursive=True) if "node_modules" not in f]
-    file_analysis['c'] = {
-        'files': [os.path.basename(f) for f in c_files] if c_files else [],
-        'count': len(c_files)
-    }
-    
-    # C++ files
-    cpp_files = [f for f in glob.glob(os.path.join(dest_path,"**" ,"*.cpp"), recursive=True) if "node_modules" not in f]
-    file_analysis['cpp'] = {
-        'files': [os.path.basename(f) for f in cpp_files] if cpp_files else [],
-        'count': len(cpp_files)
-    }
-    
-    # Go files
-    go_files = glob.glob(os.path.join(dest_path,"**", "*.go"), recursive=True)
-    file_analysis['go'] = {
-        'files': [os.path.basename(f) for f in go_files] if go_files else [],
-        'count': len(go_files)
-    }
-    
-    # Rust files
-    rust_files = glob.glob(os.path.join(dest_path,"**", "*.rs"), recursive=True)
-    file_analysis['rust'] = {
-        'files': [os.path.basename(f) for f in rust_files] if rust_files else [],
-        'count': len(rust_files)
-    }
-    
-    # Build systems
-    file_analysis['build_system'] = {
-        'has_makefile': os.path.exists(os.path.join(dest_path, "Makefile")),
-        'has_package_json': bool(js_config),
-        'has_requirements': bool(py_requirements),
-        'has_tsconfig': bool(ts_config)
-    }
-    
-    return file_analysis
-
-def determine_project_type(project_name, file_analysis):
-    """Determine project type and generate description for LLM"""
-    build_system = file_analysis['build_system']
-    
-    # Priority order for determining primary language
-    if file_analysis['python']['count'] > 0:
-        files_str = ", ".join(file_analysis['python']['files'])
-        if file_analysis['python']['has_requirements']:
-            return {
-                'type': 'python',
-                'description': f"{project_name}: Python project with requirements.txt",
-                'files': files_str,
-                'has_dependencies': True,
-                'dependency_file': 'requirements.txt'
-            }
-        else:
-            return {
-                'type': 'python', 
-                'description': f"{project_name}: Python project without dependencies",
-                'files': files_str,
-                'has_dependencies': False,
-                'dependency_file': None
-            }
-    
-    elif file_analysis['javascript']['count'] > 0:
-        files_str = ", ".join(file_analysis['javascript']['files'])
-        if file_analysis['javascript']['has_package_json']:
-            return {
-                'type': 'javascript',
-                'description': f"{project_name}: JavaScript project with package.json",
-                'files': files_str,
-                'has_dependencies': True,
-                'dependency_file': 'package.json'
-            }
-        else:
-            return {
-                'type': 'javascript', 
-                'description': f"{project_name}: JavaScript project without dependencies",
-                'files': files_str,
-                'has_dependencies': False,
-                'dependency_file': None
-            }
-    
-    elif file_analysis['typescript']['count'] > 0:
-        files_str = ", ".join(file_analysis['typescript']['files'])
-        if file_analysis['typescript']['has_tsconfig']:
-            return {
-                'type': 'typescript',
-                'description': f"{project_name}: TypeScript project with tsconfig.json",
-                'files': files_str,
-                'has_dependencies': file_analysis['javascript']['has_package_json'],
-                'dependency_file': 'package.json' if file_analysis['javascript']['has_package_json'] else None
-            }
-    
-    elif file_analysis['java']['count'] > 0:
-        files_str = ", ".join(file_analysis['java']['files'])
-        return {
-            'type': 'java',
-            'description': f"{project_name}: Java project without dependencies",
-            'files': files_str,
-            'has_dependencies': False,
-            'dependency_file': None
+        access_token = get_fresh_token()
+        
+        endpoint = "https://us-central1-aiplatform.googleapis.com/v1/projects/your-gcp-project/locations/us-central1/publishers/google/models/gemini-2.0-flash-001:generateContent"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
         }
-    
-    elif file_analysis['c']['count'] > 0:
-        files_str = ", ".join(file_analysis['c']['files'])
-        if build_system['has_makefile']:
-            return {
-                'type': 'c',
-                'description': f"{project_name}: C project with Makefile",
-                'files': files_str,
-                'has_dependencies': False,
-                'build_system': 'Makefile'
+        
+        prompt = f"""Analyze this Dockerfile for:
+        1. Security vulnerabilities
+        2. Best practices violations  
+        3. Image size optimizations
+        4. Specific recommendations
+        Response directly without starting to analyze in the response    
+        Provide explanation for each suggestion.
+        Dockerfile content: {dockerfile_content}
+        """
+        
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "maxOutputTokens": 1024,
+                "temperature": 0.2,
+                "topP": 0.8,
+                "topK": 40
             }
-        else:
-            return {
-                'type': 'c',
-                'description': f"{project_name}: C project without dependencies",
-                'files': files_str,
-                'has_dependencies': False,
-                'build_system': None
-            }
-    
-    elif file_analysis['cpp']['count'] > 0:
-        files_str = ", ".join(file_analysis['cpp']['files'])
-        if build_system['has_makefile']:
-            return {
-                'type': 'cpp',
-                'description': f"{project_name}: C++ project with Makefile",
-                'files': files_str,
-                'has_dependencies': False,
-                'build_system': 'Makefile'
-            }
-        else:
-            return {
-                'type': 'cpp',
-                'description': f"{project_name}: C++ project without dependencies",
-                'files': files_str,
-                'has_dependencies': False,
-                'build_system': None
-            }
-    
-    elif file_analysis['go']['count'] > 0:
-        files_str = ", ".join(file_analysis['go']['files'])
-        if build_system['has_makefile']:
-            return {
-                'type': 'go',
-                'description': f"{project_name}: Go project with Makefile",
-                'files': files_str,
-                'has_dependencies': False,
-                'build_system': 'Makefile'
-            }
-        else:
-            return {
-                'type': 'go',
-                'description': f"{project_name}: Go project without dependencies",
-                'files': files_str,
-                'has_dependencies': False,
-                'build_system': None
-            }
-    
-    elif file_analysis['rust']['count'] > 0:
-        files_str = ", ".join(file_analysis['rust']['files'])
-        return {
-            'type': 'rust',
-            'description': f"{project_name}: Rust project without dependencies",
-            'files': files_str,
-            'has_dependencies': False,
-            'dependency_file': None
         }
-    
-    else:
-        return {
-            'type': 'unknown',
-            'description': f"{project_name}: Unknown project type",
-            'files': '',
-            'has_dependencies': False,
-            'dependency_file': None
-        }
+        
+        response = requests.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()  # Raises exception for bad status codes
+        
+        analysis_result = response.json()['candidates'][0]['content']['parts'][0]['text']
+        
+        print("\nDockerfile Analysis with Vertex AI Gemini 1.5 Pro:")
+        print("=" * 50)
+        print(analysis_result)
+        print("=" * 50)
+        
+        # Save analysis to a file
+        analysis_file = os.path.join(os.path.dirname(output_file), "Dockerfile_Analysis.txt")
+        with open(analysis_file, "w") as f:
+            f.write("Dockerfile Analysis with Vertex AI Gemini 2.0 Flash\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(analysis_result)
+        
+        print(f"\nDockerfile analysis has been saved to '{analysis_file}'")
+        
+    except Exception as e:
+        print(f"Error calling Vertex AI: {e}")
+        return
 
-def parse_makefile_target(dest_path):
-    """Parse Makefile to find the main target - COMPREHENSIVE"""
-    makefile_path = os.path.join(dest_path, "Makefile")
+def build_and_push_to_artifact_registry(project_dir, project_name):
+    """
+    Build and push Docker image to Google Artifact Registry
+    """
+    project_name = project_name.lower()
+    project_id = "xxxxxxxxxxxxx" # Change it to your GCP project ID
+    region = "us-central1"  # or your preferred region
+    repository_name = "docker-images"  # name of the repo to store docker images
+    docker_image_name = f'{project_name}_image'
     
+    # Artifact Registry URL format
+    ar_image = f'{region}-docker.pkg.dev/{project_id}/{repository_name}/{docker_image_name}:latest'
+
     try:
-        with open(makefile_path, 'r') as f:
-            content = f.read()
-            
-        # Method 1: Look for TARGET variable (like your example)
-        target_match = re.search(r'^TARGET\s*=\s*(\w+)', content, re.MULTILINE)
-        if target_match:
-            return target_match.group(1)
+        print("Configuring Docker authentication for Artifact Registry...")
+        # Configure Docker to use gcloud as credential helper
+        auth_cmd = ['sudo','gcloud', 'auth', 'configure-docker', f'{region}-docker.pkg.dev', '--quiet']
+        result = subprocess.run(auth_cmd, capture_output=True, text=True)
         
-        # Method 2: Look for variables that might be executables
-        exe_patterns = [
-            r'^PROGRAM\s*=\s*(\w+)',
-            r'^EXECUTABLE\s*=\s*(\w+)',
-            r'^BINARY\s*=\s*(\w+)',
-            r'^OUTPUT\s*=\s*(\w+)',
+        if result.returncode != 0:
+            print(f"Authentication configuration failed: {result.stderr}")
+            return False
+
+        print("Building the Docker image...")
+        build_cmd = ['sudo', 'docker', 'build', '-t', docker_image_name, '.']
+        result = subprocess.run(build_cmd, cwd=project_dir, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print(f"Build failed: {result.stderr}")
+            return False
+        
+        print("Build successful. Tagging the image for Artifact Registry...")
+        tag_cmd = ['sudo', 'docker', 'tag', docker_image_name, ar_image]
+        result = subprocess.run(tag_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Tagging failed: {result.stderr}")
+            return False
+
+        print("Pushing the image to Artifact Registry...")
+        push_cmd = ['sudo', 'docker', 'push', ar_image]
+        result = subprocess.run(push_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Push failed: {result.stderr}")
+            print("1. Make sure you have the required IAM permissions:")
+            return False
+
+        print(f" The image has been successfully pushed to Artifact Registry:")
+        print(f"   {ar_image}")
+        return True
+        
+    except Exception as e:
+        print(f"Error in build_and_push_to_artifact_registry: {e}")
+        return False
+
+
+def create_artifact_registry_repository(project_id, region, repository_name):
+    """
+    Create an Artifact Registry repository if it doesn't exist
+    """
+    try:
+        print(f"Creating Artifact Registry repository: {repository_name}")
+        create_cmd = [
+            'gcloud', 'artifacts', 'repositories', 'create', repository_name,
+            '--repository-format=docker',
+            f'--location={region}',
+            f'--project={project_id}',
+            '--description=Docker images for automated builds'
         ]
-        for pattern in exe_patterns:
-            match = re.search(pattern, content, re.MULTILINE)
-            if match:
-                return match.group(1)
         
-        # Method 3: Look for -o flag in compilation commands
-        output_match = re.search(r'-o\s+(\$\((\w+)\)|\w+)', content)
-        if output_match:
-            if output_match.group(2):  # Variable like $(TARGET)
-                # Find what this variable equals
-                var_name = output_match.group(2)
-                var_match = re.search(rf'^{var_name}\s*=\s*(\w+)', content, re.MULTILINE)
-                if var_match:
-                    return var_match.group(1)
-            else:  # Direct name
-                return output_match.group(1)
+        result = subprocess.run(create_cmd, capture_output=True, text=True)
         
-        # Method 4: Look for first meaningful target (original logic)
-        lines = content.split('\n')
-        skip_targets = {'clean', 'install', 'all', 'run', 'help', 'test', 'distclean', 'check'}
-        
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-                
-            if ':' in line and not line.startswith('\t'):
-                target = line.split(':')[0].strip()
-                
-                # Skip special targets and variables
-                if target.startswith('.') or target in skip_targets:
-                    continue
-                
-                # Skip if it looks like a variable assignment
-                if '=' in target:
-                    continue
-                
-                # This is probably our main executable target
-                return target
-                
-    except Exception:
-        pass
-    
-    return None
-
-def determine_project_is_interactive(dest_path):
-    """Determine if the project is interactive based on code inside each file"""
-    
-    # Interactive patterns for each language
-    interactive_patterns = {
-        'python': [
-            r'input\s*\(',
-            r'raw_input\s*\(',
-            r'sys\.stdin\.read',
-            r'getpass\.getpass',
-            r'click\.prompt',
-        ],
-        'javascript': [
-            r'readline\.',
-            r'process\.stdin',
-            r'prompt\s*\(',
-            r'confirm\s*\(',
-            r'inquirer\.',
-            r'\.question\s*\(',
-        ],
-        'typescript': [
-            r'readline\.',
-            r'process\.stdin',
-            r'prompt\s*\(',
-            r'confirm\s*\(',
-            r'inquirer\.',
-            r'\.question\s*\(',
-        ],
-        'c': [
-            r'scanf\s*\(',
-            r'getchar\s*\(',
-            r'gets\s*\(',
-            r'fgets\s*\(',
-            r'getc\s*\(',
-        ],
-        'cpp': [
-            r'cin\s*>>',
-            r'getline\s*\(',
-            r'scanf\s*\(',
-            r'getchar\s*\(',
-            r'std::cin',
-            r'gets\s*\(',
-        ],
-        'java': [
-            r'Scanner\s*\(',
-            r'\.nextLine\s*\(',
-            r'\.next\s*\(',
-            r'\.nextInt\s*\(',
-            r'System\.in',
-            r'BufferedReader',
-            r'Console\.readLine',
-        ],
-        'go': [
-            r'fmt\.Scan',
-            r'bufio\.NewReader',
-            r'os\.Stdin',
-            r'fmt\.Scanf',
-            r'reader\.ReadString',
-        ],
-        'rust': [
-            r'stdin\s*\(',
-            r'read_line\s*\(',
-            r'io::stdin',
-            r'stdin\.read_line',
-        ]
-    }
-    
-    # File extensions mapping
-    file_extensions = {
-        '.py': 'python',
-        '.js': 'javascript', 
-        '.ts': 'typescript',
-        '.c': 'c',
-        '.cpp': 'cpp',
-        '.cc': 'cpp',
-        '.cxx': 'cpp',
-        '.java': 'java',
-        '.go': 'go',
-        '.rs': 'rust'
-    }
-    
-    # Search through all source files
-    for root, dirs, files in os.walk(dest_path):
-        # Skip node_modules and other irrelevant directories
-        if 'node_modules' in root or '.git' in root:
-            continue
-            
-        for file in files:
-            file_path = os.path.join(root, file)
-            file_ext = os.path.splitext(file)[1].lower()
-            
-            # Skip if not a source file we care about
-            if file_ext not in file_extensions:
-                continue
-                
-            language = file_extensions[file_ext]
-            patterns = interactive_patterns.get(language, [])
-            
-            try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                    
-                    # Check for interactive patterns
-                    for pattern in patterns:
-                        if re.search(pattern, content, re.IGNORECASE):
-                            return {
-                                'is_interactive': True,
-                                'reason': f'Found interactive pattern "{pattern}" in {file}',
-                                'file': file,
-                                'language': language
-                            }
-                            
-            except Exception as e:
-                # Skip files that can't be read
-                continue
-    
-    return {
-        'is_interactive': False,
-        'reason': 'No interactive patterns found',
-        'file': None,
-        'language': None
-    }
-
-def main():
-    inputs_dir = "inputs"
-    traitement_dir = "outputs"
-    
-    # Create traitement directory
-    if not os.path.exists(traitement_dir):
-        os.makedirs(traitement_dir)
-    
-    # List all project directories
-    projects = os.listdir(inputs_dir)
-    
-    all_project_analyses = []
-    
-    for project in projects:
-        project_path = os.path.join(inputs_dir, project)
-        
-        # Skip if not a directory
-        if not os.path.isdir(project_path):
-            continue
-            
-        # move project to traitement
-        dest_path = os.path.join(traitement_dir, project)
-        if os.path.exists(dest_path):
-            shutil.rmtree(dest_path)
-        shutil.copytree(project_path, dest_path)
-        
-        # Analyze project files
-        file_analysis = analyze_project_files(dest_path)
-        
-        # Determine project type and generate LLM context
-        project_info = determine_project_type(project, file_analysis)
-        
-        # Check if project is interactive
-        interactive_info = determine_project_is_interactive(dest_path)
-        project_info['is_interactive'] = interactive_info['is_interactive']
-        project_info['interactive_reason'] = interactive_info['reason']
-        
-        # Determine executable name for Makefile projects
-        if project_info.get('build_system') == 'Makefile':
-            makefile_target = parse_makefile_target(dest_path)
-            if makefile_target:
-                project_info['executable_name'] = makefile_target
-            else:
-                # Fallback: use first source file without extension
-                first_file = project_info['files'].split(', ')[0] if project_info['files'] else ''
-                project_info['executable_name'] = os.path.splitext(first_file)[0] if first_file else 'a.out'
+        if result.returncode == 0:
+            print(f"Repository '{repository_name}' created successfully")
+            return True
+        elif "already exists" in result.stderr:
+            print(f"Repository '{repository_name}' already exists")
+            return True
         else:
-            # For non-Makefile projects, determine executable based on language
-            files_list = [f.strip() for f in project_info['files'].split(', ')] if project_info['files'] else []
+            print(f"Failed to create repository: {result.stderr}")
+            return False
             
-            if project_info['type'] == 'typescript':
-                # Filter out .d.ts files (type definitions), prefer main TypeScript files
-                ts_files = [f for f in files_list if f.endswith('.ts') and not f.endswith('.d.ts')]
-                if ts_files:
-                    # Look for index.ts, main.ts, or app.ts first
-                    for priority_file in ['index.ts', 'main.ts', 'app.ts']:
-                        if priority_file in ts_files:
-                            project_info['executable_name'] = priority_file
-                            break
-                    else:
-                        # Use first non-.d.ts TypeScript file
-                        project_info['executable_name'] = ts_files[0]
-                else:
-                    project_info['executable_name'] = files_list[0] if files_list else 'index.ts'
-            
-            elif project_info['type'] == 'java':
-                # For Java, use class name WITH extension
-                if files_list:
-                    # Look for Main, App, or similar
-                    for file in files_list:
-                        if 'main' in file.lower() or 'app' in file.lower():
-                            project_info['executable_name'] = file  # keep .java
-                            break
-                    else:
-                        # Use first Java file WITH extension
-                        project_info['executable_name'] = files_list[0]
-                else:
-                    project_info['executable_name'] = 'Main.java'
+    except Exception as e:
+        print(f"Error creating repository: {e}")
+        return False
 
-            
-            elif project_info['type'] == 'go':
-                # Go executable is typically the directory name or 'main'
-                project_info['executable_name'] = 'main'
-            
-            elif project_info['type'] == 'python':
-                # Python runs the .py file directly
-                project_info['executable_name'] = files_list[0] if files_list else 'main.py'
-            
-            elif project_info['type'] in ['javascript', 'typescript']:
-                # Node.js runs the .js/.ts file directly
-                project_info['executable_name'] = files_list[0] if files_list else 'index.js'
-            
-            else:
-                # Default fallback
-                project_info['executable_name'] = files_list[0] if files_list else 'main'
-        
-        # Create comprehensive description for LLM
-        dependency_info = ""
-        if project_info['has_dependencies']:
-            dependency_info = f" with {project_info['dependency_file']}"
-        else:
-            dependency_info = " without dependencies"
-            
-        interactive_status = "interactive" if project_info['is_interactive'] else "non-interactive"
-        
-        # Build system information for the description
-        build_system_info = ""
-        if project_info.get('build_system') == 'Makefile':
-            build_system_info = "\n- Build system: Makefile (use 'make' to compile)"
-        elif project_info.get('dependency_file'):
-            if project_info['dependency_file'] == 'package.json':
-                build_system_info = "\n- Build system: npm/yarn (use 'npm install' for dependencies)"
-            elif project_info['dependency_file'] == 'requirements.txt':
-                build_system_info = "\n- Build system: pip (use 'pip install -r requirements.txt' for dependencies)"
-        
-        # Build the complete description that will be sent to LLM
-        project_info['description'] = f"""The project '{project}':
-- Language: {project_info['type'].upper()}
-- Files inside the project: {project_info['files']}
-- Main executable: {project_info['executable_name']}
-- Dependencies: {dependency_info}
-- Interactive: {interactive_status}
-- Dependency file exists: {'YES' if project_info['has_dependencies'] else 'NO'}{build_system_info}"""
-        
-        # Print for immediate feedback (keep the old format for console output)
-        makefile_status = " with Makefile" if project_info.get('build_system') == 'Makefile' else ""
-        print(f"{project}: {project_info['type']} project{dependency_info}{makefile_status}, files: {project_info['files']}, executable: {project_info['executable_name']}, {interactive_status}")
-        print(f"{project}: {project_info['description']}")
-
-        # Store for LLM usage
-        all_project_analyses.append(project_info)
+def push_code_back_to_github(project_name, project_dir):
+    GITHUB_TOKEN = "xxxxxxxxxxxxxxxxxxxx" # Get the credentials from github
+    repo_name = "xxxxxxxxxxxxx" # Change it to the project you want to push back to github
+    GITHUB_USERNAME = "xxxxxxxxxxxxxx" # Your github username
+    branch_name = f"add-dockerfile-{project_name.lower()}"
+    base_url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}"
     
-    return all_project_analyses
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json"
+    }
 
-if __name__ == "__main__":
-    start_listening()
-    analyses = main()
+    try:
+        # Step 1: Get main branch SHA
+        print("Getting main branch SHA...")
+        main_ref_response = requests.get(f"{base_url}/git/refs/heads/main", headers=headers)
+        if main_ref_response.status_code != 200:
+            print(f"Failed to get main branch: {main_ref_response.json()}")
+            return False
+        
+        main_branch_sha = main_ref_response.json()["object"]["sha"]
+        print(f"Main branch SHA: {main_branch_sha}")
+
+        # Step 2: Create new branch
+        print(f"Creating branch '{branch_name}'...")
+        create_branch_payload = {
+            "ref": f"refs/heads/{branch_name}",
+            "sha": main_branch_sha
+        }
+        
+        branch_response = requests.post(f"{base_url}/git/refs", json=create_branch_payload, headers=headers)
+        if branch_response.status_code == 201:
+            print(f"Branch '{branch_name}' created successfully.")
+        elif branch_response.status_code == 422:
+            print(f"Branch '{branch_name}' already exists.")
+        else:
+            print(f" Failed to create branch: {branch_response.json()}")
+            return False
+
+        # Step 3: Push Dockerfile
+        print("Uploading Dockerfile...")
+        dockerfile_path = os.path.join(project_dir, "Dockerfile")
+        
+        if not os.path.exists(dockerfile_path):
+            print(f" Dockerfile not found at {dockerfile_path}")
+            return False
+            
+        with open(dockerfile_path, "r") as file:
+            dockerfile_content = file.read()
+        
+        dockerfile_base64 = base64.b64encode(dockerfile_content.encode()).decode()
+        
+        dockerfile_payload = {
+            "message": f"Add auto-generated Dockerfile for {project_name}",
+            "content": dockerfile_base64,
+            "branch": branch_name
+        }
+        
+        dockerfile_response = requests.put(f"{base_url}/contents/Dockerfile", 
+                                         json=dockerfile_payload, headers=headers)
+        
+        if dockerfile_response.status_code in [200, 201]:
+            print(" Dockerfile uploaded successfully.")
+        else:
+            print(f" Failed to upload Dockerfile: {dockerfile_response.json()}")
+            return False
+
+        # Step 4: Push Dockerfile Analysis
+        print("Uploading Dockerfile Analysis...")
+        analysis_path = os.path.join(project_dir, "Dockerfile_Analysis.txt")
+        
+        print(f"Looking for analysis file at: {analysis_path}")
+        print(f"File exists: {os.path.exists(analysis_path)}")
+        
+        if not os.path.exists(analysis_path):
+            print(f" Analysis file not found at {analysis_path}")
+            # Try alternative path - current directory
+            alt_analysis_path = os.path.join(os.getcwd(), "Dockerfile_Analysis.txt")
+            print(f"Trying alternative path: {alt_analysis_path}")
+            if os.path.exists(alt_analysis_path):
+                analysis_path = alt_analysis_path
+                print(" Found analysis file in current directory")
+            else:
+                print(" Skipping analysis file upload...")
+                analysis_path = None
+        
+        if analysis_path:
+            with open(analysis_path, "r") as file:
+                analysis_content = file.read()
+            
+            analysis_base64 = base64.b64encode(analysis_content.encode()).decode()
+            
+            # Check if analysis file already exists to get its SHA
+            existing_analysis_response = requests.get(f"{base_url}/contents/Dockerfile_Analysis.txt?ref={branch_name}", headers=headers)
+            
+            analysis_payload = {
+                "message": f"Add Dockerfile analysis for {project_name}",
+                "content": analysis_base64,
+                "branch": branch_name
+            }
+            
+            # If file exists, add its SHA to the payload
+            if existing_analysis_response.status_code == 200:
+                analysis_payload["sha"] = existing_analysis_response.json()["sha"]
+                print("Updating existing analysis file...")
+            else:
+                print("Creating new analysis file...")
+            
+            analysis_response = requests.put(f"{base_url}/contents/Dockerfile_Analysis.txt", 
+                                           json=analysis_payload, headers=headers)
+            
+            if analysis_response.status_code in [200, 201]:
+                print("Dockerfile Analysis uploaded successfully.")
+            else:
+                print(f"Failed to upload Analysis: {analysis_response.json()}")
+
+        # Step 5: Create Pull Request
+        print("Creating Pull Request...")
+        pr_payload = {
+            "title": f" Auto-generated Dockerfile for {project_name}",
+            "head": branch_name,
+            "base": "main",  # Use detected default branch
+            "body": f"""##  Auto-generated Dockerfile
+
+This PR was automatically created by the DevOps pipeline for project: **{project_name}**
+
+### What's included:
+- Dockerfile - Generated using Ollama CodeGemma
+- Dockerfile_Analysis.txt - Security & optimization analysis by Vertex AI
+- Docker Image - Built and pushed to Google Artifact Registry
+
+### Pipeline Steps:
+1. Project detection and analysis
+2. Dockerfile generation with AI
+3. Security analysis with Vertex AI Gemini
+4. Docker build and push to Artifact Registry
+5. Automated PR creation
+
+Ready for review! """
+        }
+        
+        pr_response = requests.post(f"{base_url}/pulls", json=pr_payload, headers=headers)
+        
+        if pr_response.status_code == 201:
+            pr_url = pr_response.json()["html_url"]
+            print(f"Pull request created successfully!")
+            print(f" PR URL: {pr_url}")
+            return True
+        else:
+            print(f"Failed to create pull request: {pr_response.json()}")
+            return False
+            
+    except Exception as e:
+        print(f" Error in GitHub push: {e}")
+        return False
+# Analyze projects
+analyses = main()
+
+# Check if any projects were found
+if not analyses or len(analyses) == 0:
+    print("No projects found in the directory.")
+    print("Please make sure there are project directories to analyze.")
+    exit(1)
+
+first_project = analyses[0]
+
+# Extract project name from the description
+# The description format is: "The project 'project-name':"
+description = first_project['description']
+project_name = description.split("'")[1]  # Extract name between single quotes
+
+# Model configuration
+model = "codegemma:7b" # Change the model if you want to use another one
+
+# The prompt(You can modify it based on your needs)
+prompt = f"""You are a senior DevOps engineer. Create a Dockerfile based on the project description.
+
+RULES:
+1. Use WORKDIR /app
+2. Use COPY . . no matter what the description says,always use this command 
+3. Read the project description carefully - if it says "without dependencies" then NO dependency installation,if there is no dependencies,do not add them inside the dockerfile
+4. If it says "HAS MAKEFILE" use RUN make, then CMD ["./executable_name"]
+5. If no Makefile, use appropriate language commands ( for js and typecript use  ["npm","start"] and so on for other languages), Do NOT USE run make if there is no Makefile
+6. Use these latest stable Docker base images:
+   - python:3.12 for Python
+   - node:20 for Node.js/JavaScript
+   - node:20-slim for TypeScript
+   - openjdk:21 for Java
+   - golang:1.23 for Go
+   - rust:latest for Rust
+   - gcc:14 for C
+   - gcc:14 for C++
+   - php:8.3 for PHP
+   - ruby:3.3 for Ruby
+   - dotnet:8.0 for C#/.NET
+
+PROJECT DESCRIPTION:
+{first_project['description']}
+
+Generate only the Dockerfile content, no explanations."""
+
+# Save Dockerfile inside the specific project directory
+project_dir = os.path.join("outputs", project_name)
+output_file = os.path.join(project_dir, "Dockerfile")
+
+# Ensure the project directory exists
+os.makedirs(project_dir, exist_ok=True)
+
+# Send the prompt and get the response
+try:
+    print(f"Generating Dockerfile for: {project_name}")
+    print(f"Saving to: {output_file}")
+    print("=" * 60)
+    
+    response = ollama.generate(
+        model=model, 
+        prompt=prompt,
+        options={
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "top_k": 40
+        }
+    )
+    
+    generated_text = response.get("response", "")
+    
+    # Clean up the response
+    dockerfile_content = generated_text.strip()
+    
+    # Remove markdown code block markers
+    if dockerfile_content.startswith("```dockerfile"):
+        dockerfile_content = dockerfile_content[len("```dockerfile"):].strip()
+    elif dockerfile_content.startswith("```"):
+        dockerfile_content = dockerfile_content[3:].strip()
+    
+    if dockerfile_content.endswith("```"):
+        dockerfile_content = dockerfile_content[:-3].strip()
+    
+    print("Generated Dockerfile:")
+    print("=" * 30)
+    print(dockerfile_content)
+    print("=" * 30)
+
+    # Write the Dockerfile to the output file
+    with open(output_file, "w") as f:
+        f.write(dockerfile_content)
+
+    print(f"\nDockerfile has been saved to '{output_file}'")
+    
+    # Analyze the generated Dockerfile with Vertex AI
+    analyse_dockerfile_with_vertexai(output_file, dockerfile_content)
+    # Create repository for storing images inside artifct registry
+    create_artifact_registry_repository("total-treat-466514-k4", "us-central1", "docker-images")
+
+    # Build and push to GAR
+    build_and_push_to_artifact_registry(project_dir, project_name)
+    #Push the code to Github as Pull Request
+    push_code_back_to_github(project_name,project_dir)
+except Exception as e:
+    print(f"An error occurred: {str(e)}")
