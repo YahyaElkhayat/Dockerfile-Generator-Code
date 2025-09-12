@@ -1,6 +1,10 @@
 # Automated Dockerfile Generator
 
 <p align="center">
+  <img src="path/to/your/header-image.png" alt="Dockerfile Generator Pipeline" width="800">
+</p>
+
+<p align="center">
   Smart containerization for your programming projects. Built with AI.
 </p>
 
@@ -18,6 +22,7 @@
 - [Supported Languages](#supported-languages)
 - [Project Structure](#project-structure)
 - [Local Deployment](#local-deployment)
+- [Cloud Deployment](#cloud-deployment)
 - [Usage Workflow](#usage-workflow)
 - [Example Output](#example-output)
 
@@ -141,43 +146,211 @@ crontab -e
 */5 * * * * cd /path/to/project && ./venv/bin/python Ollama-code.py >> /tmp/docker-gen.log 2>&1
 ```
 
-## Usage Workflow
+## Cloud Deployment
 
-1. **Add Projects**: Place your programming projects in the inputs/ directory
-2. **Run Analysis**: Execute `python main.py` to analyze project structure
-3. **Generate Dockerfiles**: Execute `python Ollama-code.py` to create Dockerfiles
-4. **Review Results**: Check outputs/PROJECT_NAME/Dockerfile for generated configurations
-5. **Test Containers**: Build and run your Docker containers:
-   ```bash
-   cd outputs/PROJECT_NAME
-   docker build -t my-project .
-   docker run my-project
-   ```
+### Overview
 
-## Example Output
+The cloud deployment extends the local functionality with a complete DevOps pipeline that includes automated Dockerfile generation, security analysis, Docker image building, and automated GitHub integration.
 
-**Input Project Structure:**
-```
-inputs/my-python-app/
-├── main.py
-├── requirements.txt
-└── utils.py
+### Architecture
+
+The cloud pipeline consists of several Google Cloud Platform services working together:
+
+1. **Compute Engine**: Hosts the main application and Ollama AI model
+2. **Vertex AI**: Provides advanced security analysis using Gemini 2.0 Flash
+3. **Artifact Registry**: Stores built Docker images
+4. **Cloud Scheduler**: Triggers automated pipeline execution
+5. **Cloud Functions**: Handles webhook events and notifications
+6. **Cloud Pub/Sub**: Manages message queuing between services
+
+### How It Works
+
+The automated pipeline follows this workflow:
+
+1. **Project Detection**: When a new project is pushed to GitHub, a webhook triggers the pipeline
+2. **AI Analysis**: Ollama CodeGemma analyzes the project structure and generates an optimized Dockerfile
+3. **Security Scanning**: Vertex AI Gemini performs comprehensive security analysis of the generated Dockerfile
+4. **Image Building**: Docker builds and tags the image automatically
+5. **Registry Push**: The built image is pushed to Google Artifact Registry
+6. **GitHub Integration**: Creates a pull request with the generated Dockerfile and security analysis
+7. **Notification**: Sends completion status via configured channels
+
+### Prerequisites
+
+- Google Cloud Platform account with billing enabled
+- GitHub repository access token
+- Docker installed on Compute Engine instance
+- Required IAM permissions for all services
+
+### Step-by-Step Setup Guide
+
+#### 1. Google Cloud Project Setup
+
+```bash
+# Create new project
+gcloud projects create dockerfile-generator-project
+
+# Set project
+gcloud config set project dockerfile-generator-project
+
+# Enable required APIs
+gcloud services enable compute.googleapis.com
+gcloud services enable artifactregistry.googleapis.com
+gcloud services enable aiplatform.googleapis.com
+gcloud services enable cloudfunctions.googleapis.com
+gcloud services enable cloudscheduler.googleapis.com
+gcloud services enable pubsub.googleapis.com
 ```
 
-**Generated Analysis:**
-```
-my-python-app: Python project with requirements.txt
-- Language: PYTHON
-- Files: main.py, utils.py
-- Dependencies: with requirements.txt
-- Interactive: non-interactive
+#### 2. Artifact Registry Setup
+
+```bash
+# Create Docker repository
+gcloud artifacts repositories create docker-images \
+    --repository-format=docker \
+    --location=us-central1 \
+    --description="Docker images for automated builds"
+
+# Configure Docker authentication
+gcloud auth configure-docker us-central1-docker.pkg.dev
 ```
 
-**Generated Dockerfile:**
-```dockerfile
-FROM python:3.12
-WORKDIR /app
-COPY . .
-RUN pip install -r requirements.txt
-CMD ["python3", "main.py"]
+#### 3. Compute Engine Instance Setup
+
+```bash
+# Create compute instance
+gcloud compute instances create dockerfile-generator \
+    --zone=us-central1-a \
+    --machine-type=e2-standard-4 \
+    --boot-disk-size=50GB \
+    --image-family=ubuntu-2004-lts \
+    --image-project=ubuntu-os-cloud \
+    --scopes=cloud-platform
+
+# SSH into instance
+gcloud compute ssh dockerfile-generator --zone=us-central1-a
 ```
+
+#### 4. Install Dependencies on Compute Engine
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+
+# Install Python dependencies
+sudo apt install python3-pip git -y
+pip3 install ollama requests google-cloud-aiplatform
+
+# Install and setup Ollama
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama pull codegemma:7b
+
+# Install Google Cloud SDK (if not present)
+curl https://sdk.cloud.google.com | bash
+exec -l $SHELL
+```
+
+#### 5. Deploy Application Code
+
+```bash
+# Clone your repository
+git clone https://github.com/YahyaElkhayat/Python-Project-v2.git
+cd Python-Project-v2
+
+# Set up environment variables
+export GOOGLE_CLOUD_PROJECT="dockerfile-generator-project"
+export GITHUB_TOKEN="your_github_token_here"
+
+# Make scripts executable
+chmod +x *.py
+```
+
+#### 6. Service Account and IAM Setup
+
+```bash
+# Create service account
+gcloud iam service-accounts create dockerfile-generator-sa \
+    --description="Service account for Dockerfile generator" \
+    --display-name="Dockerfile Generator SA"
+
+# Grant necessary permissions
+gcloud projects add-iam-policy-binding dockerfile-generator-project \
+    --member="serviceAccount:dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com" \
+    --role="roles/artifactregistry.writer"
+
+gcloud projects add-iam-policy-binding dockerfile-generator-project \
+    --member="serviceAccount:dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com" \
+    --role="roles/aiplatform.user"
+
+gcloud projects add-iam-policy-binding dockerfile-generator-project \
+    --member="serviceAccount:dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com" \
+    --role="roles/compute.instanceAdmin"
+
+# Create and download key
+gcloud iam service-accounts keys create key.json \
+    --iam-account=dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com
+
+# Set environment variable
+export GOOGLE_APPLICATION_CREDENTIALS="key.json"
+```
+
+#### 7. Cloud Functions Setup (Optional - for webhook handling)
+
+```bash
+# Create Pub/Sub topic
+gcloud pubsub topics create dockerfile-generation-trigger
+
+# Deploy Cloud Function
+gcloud functions deploy dockerfile-webhook \
+    --runtime python39 \
+    --trigger-http \
+    --allow-unauthenticated \
+    --entry-point handle_webhook \
+    --source ./cloud-functions \
+    --set-env-vars PUBSUB_TOPIC=dockerfile-generation-trigger
+```
+
+#### 8. Cloud Scheduler Setup
+
+```bash
+# Create scheduled job to run pipeline daily
+gcloud scheduler jobs create http dockerfile-daily-check \
+    --schedule="0 2 * * *" \
+    --uri="http://COMPUTE_ENGINE_EXTERNAL_IP:8080/trigger" \
+    --http-method=POST \
+    --description="Daily Dockerfile generation check"
+```
+
+#### 9. Testing the Pipeline
+
+```bash
+# Run manual test
+python3 Ollama-code.py
+
+# Check logs
+tail -f /var/log/dockerfile-generator.log
+
+# Verify Artifact Registry
+gcloud artifacts docker images list --repository=docker-images --location=us-central1
+```
+
+### Configuration Files
+
+#### Environment Variables
+```bash
+# Create .env file
+cat << EOF > .env
+GOOGLE_CLOUD_PROJECT=dockerfile-generator-project
+GITHUB_TOKEN=your_github_token_here
+ARTIFACT_REGISTRY_LOCATION=us-central1
+ARTIFACT_REGISTRY_REPOSITORY=docker-images
+VERTEX_AI_LOCATION=us-central1
+VERTEX_AI_MODEL=gemini-2.0-flash-001
+EOF
+```
+
