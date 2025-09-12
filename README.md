@@ -20,8 +20,6 @@
 - [Project Structure](#project-structure)
 - [Local Deployment](#local-deployment)
 - [Cloud Deployment](#cloud-deployment)
-- [Usage Workflow](#usage-workflow)
-- [Example Output](#example-output)
 
 ## Overview
 
