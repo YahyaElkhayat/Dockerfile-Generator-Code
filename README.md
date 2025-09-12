@@ -99,7 +99,6 @@ This project automatically generates Dockerfiles for simple programming projects
 3. **Install Python Dependencies:**
    ```bash
    pip install ollama
-   # Add any other dependencies from your requirements.txt
    ```
 
 4. **Customize Model (Optional):**
@@ -116,7 +115,7 @@ This project automatically generates Dockerfiles for simple programming projects
 python main.py
 ```
 
-**Expected Output:**
+**Output:**
 - Analyzes projects in inputs/ directory
 - Moves projects to outputs/ directory
 - Displays project structure analysis
@@ -127,7 +126,7 @@ python main.py
 python Ollama-code.py
 ```
 
-**Expected Output:**
+**Output:**
 - Analyzes the first project in outputs/
 - Generates Dockerfile using AI model
 - Saves Dockerfile in the project directory
@@ -145,209 +144,42 @@ crontab -e
 
 ## Cloud Deployment
 
-### Overview
+### Pipeline Overview
 
-The cloud deployment extends the local functionality with a complete DevOps pipeline that includes automated Dockerfile generation, security analysis, Docker image building, and automated GitHub integration.
+The cloud deployment follows a fully automated DevOps pipeline:
 
-### Architecture
+**GitHub (new repo)** → **Cloud Function (detector)** → **Pub/Sub** → **VM pulls code** → **Ollama generates Dockerfile** → **Vertex AI analyzes** → **GCR stores image** → **Push back to GitHub (via GitHub API)**
 
-The cloud pipeline consists of several Google Cloud Platform services working together:
+### Architecture Components
 
-1. **Compute Engine**: Hosts the main application and Ollama AI model
-2. **Vertex AI**: Provides advanced security analysis using Gemini 2.0 Flash
-3. **Artifact Registry**: Stores built Docker images
-4. **Cloud Scheduler**: Triggers automated pipeline execution
-5. **Cloud Functions**: Handles webhook events and notifications
-6. **Cloud Pub/Sub**: Manages message queuing between services
+1. **GitHub Repository**: Source code repository with webhook integration
+2. **Cloud Function**: Webhook detector that triggers on new pushes
+3. **Pub/Sub**: Message queue for decoupled pipeline orchestration
+4. **Compute Engine VM**: Hosts Ollama AI model and processing logic
+5. **Vertex AI**: Provides security analysis using Gemini 2.0 Flash
+6. **Google Container Registry (GCR)**: Stores built Docker images
+7. **GitHub API Integration**: Automatically pushes results back to repository
 
-### How It Works
+### Pipeline Workflow
 
-The automated pipeline follows this workflow:
-
-1. **Project Detection**: When a new project is pushed to GitHub, a webhook triggers the pipeline
-2. **AI Analysis**: Ollama CodeGemma analyzes the project structure and generates an optimized Dockerfile
-3. **Security Scanning**: Vertex AI Gemini performs comprehensive security analysis of the generated Dockerfile
-4. **Image Building**: Docker builds and tags the image automatically
-5. **Registry Push**: The built image is pushed to Google Artifact Registry
-6. **GitHub Integration**: Creates a pull request with the generated Dockerfile and security analysis
-7. **Notification**: Sends completion status via configured channels
+1. **Code Push Detection**: Developer pushes new code to GitHub repository
+2. **Webhook Trigger**: GitHub webhook triggers Cloud Function detector
+3. **Message Queue**: Cloud Function publishes message to Pub/Sub topic
+4. **Code Retrieval**: VM subscriber pulls latest code from GitHub
+5. **AI Analysis**: Ollama CodeGemma analyzes project structure
+6. **Dockerfile Generation**: AI creates optimized Dockerfile
+7. **Security Analysis**: Vertex AI Gemini performs security scanning
+8. **Image Building**: Docker builds and tags the container image
+9. **Registry Storage**: Built image pushed to Google Container Registry
+10. **GitHub Integration**: Results pushed back via GitHub API (PR or commit)
 
 ### Prerequisites
 
 - Google Cloud Platform account with billing enabled
-- GitHub repository access token
-- Docker installed on Compute Engine instance
-- Required IAM permissions for all services
+- GitHub repository with admin access
+- GitHub Personal Access Token
+- Required GCP APIs enabled
 
-### Step-by-Step Setup Guide
+### Step-by-Step Setup(Coming soon)
 
-#### 1. Google Cloud Project Setup
-
-```bash
-# Create new project
-gcloud projects create dockerfile-generator-project
-
-# Set project
-gcloud config set project dockerfile-generator-project
-
-# Enable required APIs
-gcloud services enable compute.googleapis.com
-gcloud services enable artifactregistry.googleapis.com
-gcloud services enable aiplatform.googleapis.com
-gcloud services enable cloudfunctions.googleapis.com
-gcloud services enable cloudscheduler.googleapis.com
-gcloud services enable pubsub.googleapis.com
-```
-
-#### 2. Artifact Registry Setup
-
-```bash
-# Create Docker repository
-gcloud artifacts repositories create docker-images \
-    --repository-format=docker \
-    --location=us-central1 \
-    --description="Docker images for automated builds"
-
-# Configure Docker authentication
-gcloud auth configure-docker us-central1-docker.pkg.dev
-```
-
-#### 3. Compute Engine Instance Setup
-
-```bash
-# Create compute instance
-gcloud compute instances create dockerfile-generator \
-    --zone=us-central1-a \
-    --machine-type=e2-standard-4 \
-    --boot-disk-size=50GB \
-    --image-family=ubuntu-2004-lts \
-    --image-project=ubuntu-os-cloud \
-    --scopes=cloud-platform
-
-# SSH into instance
-gcloud compute ssh dockerfile-generator --zone=us-central1-a
-```
-
-#### 4. Install Dependencies on Compute Engine
-
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
-
-# Install Python dependencies
-sudo apt install python3-pip git -y
-pip3 install ollama requests google-cloud-aiplatform
-
-# Install and setup Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull codegemma:7b
-
-# Install Google Cloud SDK (if not present)
-curl https://sdk.cloud.google.com | bash
-exec -l $SHELL
-```
-
-#### 5. Deploy Application Code
-
-```bash
-# Clone your repository
-git clone https://github.com/YahyaElkhayat/Python-Project-v2.git
-cd Python-Project-v2
-
-# Set up environment variables
-export GOOGLE_CLOUD_PROJECT="dockerfile-generator-project"
-export GITHUB_TOKEN="your_github_token_here"
-
-# Make scripts executable
-chmod +x *.py
-```
-
-#### 6. Service Account and IAM Setup
-
-```bash
-# Create service account
-gcloud iam service-accounts create dockerfile-generator-sa \
-    --description="Service account for Dockerfile generator" \
-    --display-name="Dockerfile Generator SA"
-
-# Grant necessary permissions
-gcloud projects add-iam-policy-binding dockerfile-generator-project \
-    --member="serviceAccount:dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com" \
-    --role="roles/artifactregistry.writer"
-
-gcloud projects add-iam-policy-binding dockerfile-generator-project \
-    --member="serviceAccount:dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com" \
-    --role="roles/aiplatform.user"
-
-gcloud projects add-iam-policy-binding dockerfile-generator-project \
-    --member="serviceAccount:dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com" \
-    --role="roles/compute.instanceAdmin"
-
-# Create and download key
-gcloud iam service-accounts keys create key.json \
-    --iam-account=dockerfile-generator-sa@dockerfile-generator-project.iam.gserviceaccount.com
-
-# Set environment variable
-export GOOGLE_APPLICATION_CREDENTIALS="key.json"
-```
-
-#### 7. Cloud Functions Setup (Optional - for webhook handling)
-
-```bash
-# Create Pub/Sub topic
-gcloud pubsub topics create dockerfile-generation-trigger
-
-# Deploy Cloud Function
-gcloud functions deploy dockerfile-webhook \
-    --runtime python39 \
-    --trigger-http \
-    --allow-unauthenticated \
-    --entry-point handle_webhook \
-    --source ./cloud-functions \
-    --set-env-vars PUBSUB_TOPIC=dockerfile-generation-trigger
-```
-
-#### 8. Cloud Scheduler Setup
-
-```bash
-# Create scheduled job to run pipeline daily
-gcloud scheduler jobs create http dockerfile-daily-check \
-    --schedule="0 2 * * *" \
-    --uri="http://COMPUTE_ENGINE_EXTERNAL_IP:8080/trigger" \
-    --http-method=POST \
-    --description="Daily Dockerfile generation check"
-```
-
-#### 9. Testing the Pipeline
-
-```bash
-# Run manual test
-python3 Ollama-code.py
-
-# Check logs
-tail -f /var/log/dockerfile-generator.log
-
-# Verify Artifact Registry
-gcloud artifacts docker images list --repository=docker-images --location=us-central1
-```
-
-### Configuration Files
-
-#### Environment Variables
-```bash
-# Create .env file
-cat << EOF > .env
-GOOGLE_CLOUD_PROJECT=dockerfile-generator-project
-GITHUB_TOKEN=your_github_token_here
-ARTIFACT_REGISTRY_LOCATION=us-central1
-ARTIFACT_REGISTRY_REPOSITORY=docker-images
-VERTEX_AI_LOCATION=us-central1
-VERTEX_AI_MODEL=gemini-2.0-flash-001
-EOF
-```
-
+If you'd like to move forward with this project, feel free to clone it, enhance it further, and share your improvements with me – I'd love to see how you expand on this automated containerization pipeline!
